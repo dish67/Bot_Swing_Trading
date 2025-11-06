@@ -341,7 +341,14 @@ def ensure_log_header() -> None:
             handle.write("timestamp,Paire,Direction,Entrée,Sortie,PnL (%),PnL ($),Résultat\n")
 
 
-def log_trade(symbol: str, side: str, entry: float, exit_price: float, pnl_pct: float) -> None:
+def log_trade(
+    symbol: str,
+    side: str,
+    entry: float,
+    exit_price: float,
+    pnl_pct: float,
+    reason: Optional[str] = None,
+) -> None:
     ensure_log_header()
     result = "Gagné" if pnl_pct > 0 else "Perdu"
     row = [
@@ -356,6 +363,15 @@ def log_trade(symbol: str, side: str, entry: float, exit_price: float, pnl_pct: 
     ]
     with open(LOG_FILE, "a", encoding="utf-8") as handle:
         handle.write(",".join(map(str, row)) + "\n")
+
+    outcome_pct = pnl_pct * 100
+    outcome_cash = pnl_pct * CAPITAL_PER_TRADE
+    reason_hint = f" ({reason})" if reason else ""
+    emoji = "✅" if pnl_pct > 0 else "❌"
+    print(
+        f"   {emoji} {symbol} {side} fermé{reason_hint} | sortie={exit_price:.5f} | "
+        f"PnL={outcome_pct:.2f}% ({outcome_cash:.2f}$)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -506,7 +522,7 @@ def run_backtest() -> None:
                     else (position.entry - exit_price) / position.entry
                 )
                 pnl_pct = gross_pct - FEES_ROUNDTRIP
-                log_trade(symbol, position.side, position.entry, exit_price, pnl_pct)
+                log_trade(symbol, position.side, position.entry, exit_price, pnl_pct, reason)
 
                 sl_pct_abs = max(abs(position.sl_pct), 1e-6)
                 r_multiple = pnl_pct / sl_pct_abs
@@ -549,6 +565,11 @@ def run_backtest() -> None:
                 tp_price = entry_price * (1 - tp_pct)
 
             position = Position(side=side, entry=entry_price, sl_price=sl_price, tp_price=tp_price, sl_pct=sl_pct)
+            entry_emoji = "🟢" if side == "LONG" else "🔴"
+            print(
+                f"   {entry_emoji} {symbol} {side} ouvert @ {entry_price:.5f} | "
+                f"SL={sl_price:.5f} | TP={tp_price:.5f}"
+            )
             last_trade_ts = candle_ts
 
     try:
@@ -637,7 +658,7 @@ def run_live_paper() -> None:
                 if symbol in open_pos:
                     position = open_pos[symbol]
                     _update_trailing_stop(position, candle["close"], atr)
-                    exit_price, _ = _check_exit(position, candle)
+                    exit_price, reason = _check_exit(position, candle)
                     if exit_price is None:
                         continue
                     gross_pct = (
@@ -646,7 +667,7 @@ def run_live_paper() -> None:
                         else (position.entry - exit_price) / position.entry
                     )
                     pnl_pct = gross_pct - FEES_ROUNDTRIP
-                    log_trade(symbol, position.side, position.entry, exit_price, pnl_pct)
+                    log_trade(symbol, position.side, position.entry, exit_price, pnl_pct, reason)
                     sl_pct_abs = max(abs(position.sl_pct), 1e-6)
                     r_multiple = pnl_pct / sl_pct_abs
                     if pnl_pct <= 0:
@@ -656,7 +677,10 @@ def run_live_paper() -> None:
                     daily_r[day_key] = daily_r.get(day_key, 0.0) + r_multiple
                     trades_today[day_key] = trades_today.get(day_key, 0) + 1
                     last_trade_ts[symbol] = candle_ts
-                    tg_send(f"✅ {symbol} {position.side} fermé | pnl={pnl_pct * 100:.2f}%")
+                    reason_suffix = f" ({reason})" if reason else ""
+                    tg_send(
+                        f"✅ {symbol} {position.side} fermé{reason_suffix} | pnl={pnl_pct * 100:.2f}%"
+                    )
                     del open_pos[symbol]
                     continue
 
@@ -687,6 +711,11 @@ def run_live_paper() -> None:
 
                 open_pos[symbol] = Position(side=side, entry=entry_price, sl_price=sl_price, tp_price=tp_price, sl_pct=sl_pct)
                 last_trade_ts[symbol] = candle_ts
+                entry_emoji = "🟢" if side == "LONG" else "🔴"
+                print(
+                    f"   {entry_emoji} {symbol} {side} ouvert @ {entry_price:.5f} | "
+                    f"SL={sl_price:.5f} | TP={tp_price:.5f}"
+                )
                 tg_send(f"📥 {symbol} {side} (paper) | entry={entry_price}")
             except Exception as exc:
                 print(f"[{symbol}] erreur: {exc}")
