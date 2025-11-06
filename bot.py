@@ -557,10 +557,13 @@ def run_backtest() -> None:
             print("\nℹ️ Aucun trade loggé.")
             return
         df_log["PnL ($)"] = df_log["PnL ($)"].str.replace("$", "", regex=False).astype(float)
-        df_log["timestamp"] = pd.to_datetime(df_log["timestamp"], errors="coerce")
-        df_log = df_log[(df_log["timestamp"] >= pd.to_datetime(BT_START)) & (
-            df_log["timestamp"] < pd.to_datetime(BT_END) + pd.Timedelta(days=1)
-        )]
+        df_log["timestamp"] = pd.to_datetime(df_log["timestamp"], errors="coerce", utc=True)
+        window_start = pd.Timestamp(BT_START, tz=timezone.utc)
+        window_end = pd.Timestamp(BT_END, tz=timezone.utc) + pd.Timedelta(days=1)
+        df_log = df_log[(df_log["timestamp"] >= window_start) & (df_log["timestamp"] < window_end)]
+        if df_log.empty:
+            print("\nℹ️ Aucun trade loggé dans la fenêtre demandée.")
+            return
         wins_n = (df_log["Résultat"] == "Gagné").sum()
         total_n = len(df_log)
         pnl_net = df_log["PnL ($)"].sum()
