@@ -37,6 +37,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 BACKTEST = True
+BT_START = "2025-10-01"
+BT_END = "2025-11-01"
 BT_START = "2025-09-01"
 BT_END = "2025-10-01"
 
@@ -49,6 +51,8 @@ PAUSE_FILE = "pause.flag"
 LAST_MSG_FILE = "last_msg.txt"
 
 FEES_ROUNDTRIP = 0.003
+
+PRESET_NAME = "actif"
 
 TAKE_PROFIT_R = 2.2
 STOP_ATR_MULT = 1.3
@@ -591,12 +595,11 @@ def run_backtest() -> None:
         pnl_net = df_log["PnL ($)"].sum()
         best_pair = df_log.groupby("Paire")["PnL ($)"].sum().sort_values(ascending=False).index[0]
         wr = (wins_n / total_n * 100) if total_n else 0
-        capital_used = CAPITAL_PER_TRADE * total_n if total_n else 0.0
-        pnl_pct_total = (pnl_net / capital_used * 100) if capital_used else 0.0
         print(
-            f"\n📈 Résumé Backtest {BT_START} → {BT_END} (tf={TIMEFRAME})\n"
-            f"Trades : {total_n} | Gagnés : {wins_n} | Perdus : {total_n - wins_n} | Winrate : {wr:.2f}%\n"
-            f"PnL net : {pnl_net:.2f}$ | Variation : {pnl_pct_total:.2f}% | Meilleure paire : {best_pair}"
+            "\n"
+            f"📈 Résumé Backtest {BT_START} → {BT_END} (preset={PRESET_NAME}) "
+            f"Trades : {total_n} | Gagnés : {wins_n} | Perdus : {total_n - wins_n} | Winrate : {wr:.2f}% "
+            f"PnL net : {pnl_net:.2f}$ | Meilleure paire : {best_pair}"
         )
     except Exception as exc:
         print(f"❌ Erreur résumé backtest: {exc}")
