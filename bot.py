@@ -687,13 +687,18 @@ def run_backtest() -> None:
         wins_n = (df_log["Résultat"] == "Gagné").sum()
         total_n = len(df_log)
         pnl_net = df_log["PnL ($)"].sum()
+        pnl_gains = df_log.loc[df_log["PnL ($)"] > 0, "PnL ($)"].sum()
+        pnl_losses = df_log.loc[df_log["PnL ($)"] < 0, "PnL ($)"].sum()
+        pct_gains = df_log.loc[df_log["PnL (%)"] > 0, "PnL (%)"].sum()
+        pct_losses = df_log.loc[df_log["PnL (%)"] < 0, "PnL (%)"].sum()
         best_pair = df_log.groupby("Paire")["PnL ($)"].sum().sort_values(ascending=False).index[0]
         wr = (wins_n / total_n * 100) if total_n else 0
         print(
             "\n"
             f"📈 Résumé Backtest {BT_START} → {BT_END} (preset={PRESET_NAME}) "
             f"Trades : {total_n} | Gagnés : {wins_n} | Perdus : {total_n - wins_n} | Winrate : {wr:.2f}% "
-            f"PnL net : {pnl_net:.2f}$ | Meilleure paire : {best_pair}"
+            f"PnL net : {pnl_net:.2f}$ | Gains : {pnl_gains:.2f}$ ({pct_gains:.2f}%) | "
+            f"Pertes : {abs(pnl_losses):.2f}$ ({abs(pct_losses):.2f}%) | Meilleure paire : {best_pair}"
         )
     except Exception as exc:
         print(f"❌ Erreur résumé backtest: {exc}")
