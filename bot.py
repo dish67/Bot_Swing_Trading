@@ -139,6 +139,17 @@ def _apply_preset(name: str) -> str:
 
 PRESET_NAME = _apply_preset(PRESET_NAME)
 
+_raw_paper_runtime = os.getenv("BOT_PAPER_RUNTIME_HOURS")
+if _raw_paper_runtime is None:
+    PAPER_RUNTIME_HOURS = 48.0 if PAPER_TRADING else 0.0
+else:
+    try:
+        PAPER_RUNTIME_HOURS = float(_raw_paper_runtime)
+    except ValueError:
+        PAPER_RUNTIME_HOURS = 48.0 if PAPER_TRADING else 0.0
+if PAPER_RUNTIME_HOURS < 0:
+    PAPER_RUNTIME_HOURS = 0.0
+
 ALLOW_LIVE_SHORTS = os.getenv("BOT_ALLOW_SHORTS", "false").strip().lower() == "true"
 
 # ---------------------------------------------------------------------------
@@ -753,9 +764,21 @@ def run_live_paper() -> None:
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
     market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
     last_market_refresh: Optional[pd.Timestamp] = None
+    runtime_deadline: Optional[pd.Timestamp] = None
+    if PAPER_RUNTIME_HOURS > 0:
+        runtime_deadline = pd.Timestamp(datetime.now(timezone.utc)) + pd.Timedelta(hours=PAPER_RUNTIME_HOURS)
+
+    def _announce_runtime_stop() -> None:
+        hours_value = int(PAPER_RUNTIME_HOURS) if PAPER_RUNTIME_HOURS.is_integer() else PAPER_RUNTIME_HOURS
+        message = f"⏹ Durée paper de {hours_value}h atteinte, arrêt du bot."
+        print(message)
+        tg_send(message)
 
     while True:
         now_utc = datetime.now(timezone.utc)
+        if runtime_deadline is not None and now_utc >= runtime_deadline:
+            _announce_runtime_stop()
+            return
         if tg_check_pause():
             print("⏸ Pause active…")
             time.sleep(15)
@@ -870,6 +893,9 @@ def run_live_paper() -> None:
                 tg_send(f"📥 {symbol} {side} (paper) | entry={entry_price}")
             except Exception as exc:
                 print(f"[{symbol}] erreur: {exc}")
+        if runtime_deadline is not None and datetime.now(timezone.utc) >= runtime_deadline:
+            _announce_runtime_stop()
+            return
         time.sleep(20)
 
 
