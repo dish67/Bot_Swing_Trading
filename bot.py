@@ -558,6 +558,12 @@ def run_backtest() -> None:
 
     total_trades = 0
     wins = 0
+    pnl_net_dollars = 0.0
+    pnl_gains_dollars = 0.0
+    pnl_losses_dollars = 0.0
+    pct_gains_total = 0.0
+    pct_losses_total = 0.0
+    pair_pnl: Dict[str, float] = {}
 
     for symbol in SYMBOLS:
         print(f"🚀 {symbol}…")
@@ -624,9 +630,17 @@ def run_backtest() -> None:
                 r_multiple = pnl_pct / sl_pct_abs
                 if pnl_pct <= 0:
                     streak_losses += 1
+                    pnl_losses_dollars += abs(pnl_pct * CAPITAL_PER_TRADE)
+                    pct_losses_total += abs(pnl_pct * 100)
                 else:
                     streak_losses = 0
                     wins += 1
+                    pnl_gains_dollars += pnl_pct * CAPITAL_PER_TRADE
+                    pct_gains_total += pnl_pct * 100
+
+                pnl_net_dollars += pnl_pct * CAPITAL_PER_TRADE
+                pair_pnl[symbol] = pair_pnl.get(symbol, 0.0) + (pnl_pct * CAPITAL_PER_TRADE)
+
                 daily_r[day_key] = daily_r.get(day_key, 0.0) + r_multiple
                 trades_today[day_key] = trades_today.get(day_key, 0) + 1
                 last_trade_ts = candle_ts
@@ -670,38 +684,21 @@ def run_backtest() -> None:
             )
             last_trade_ts = candle_ts
 
-    try:
-        df_log = pd.read_csv(LOG_FILE)
-        if df_log.empty:
-            print("\nℹ️ Aucun trade loggé.")
-            return
-        df_log["PnL ($)"] = df_log["PnL ($)"].str.replace("$", "", regex=False).astype(float)
-        df_log["PnL (%)"] = df_log["PnL (%)"].str.replace("%", "", regex=False).astype(float)
-        df_log["timestamp"] = pd.to_datetime(df_log["timestamp"], errors="coerce", utc=True)
-        window_start = pd.Timestamp(BT_START, tz=timezone.utc)
-        window_end = pd.Timestamp(BT_END, tz=timezone.utc) + pd.Timedelta(days=1)
-        df_log = df_log[(df_log["timestamp"] >= window_start) & (df_log["timestamp"] < window_end)]
-        if df_log.empty:
-            print("\nℹ️ Aucun trade loggé dans la fenêtre demandée.")
-            return
-        wins_n = (df_log["Résultat"] == "Gagné").sum()
-        total_n = len(df_log)
-        pnl_net = df_log["PnL ($)"].sum()
-        pnl_gains = df_log.loc[df_log["PnL ($)"] > 0, "PnL ($)"].sum()
-        pnl_losses = df_log.loc[df_log["PnL ($)"] < 0, "PnL ($)"].sum()
-        pct_gains = df_log.loc[df_log["PnL (%)"] > 0, "PnL (%)"].sum()
-        pct_losses = df_log.loc[df_log["PnL (%)"] < 0, "PnL (%)"].sum()
-        best_pair = df_log.groupby("Paire")["PnL ($)"].sum().sort_values(ascending=False).index[0]
-        wr = (wins_n / total_n * 100) if total_n else 0
-        print(
-            "\n"
-            f"📈 Résumé Backtest {BT_START} → {BT_END} (preset={PRESET_NAME}) "
-            f"Trades : {total_n} | Gagnés : {wins_n} | Perdus : {total_n - wins_n} | Winrate : {wr:.2f}% "
-            f"PnL net : {pnl_net:.2f}$ | Gains : {pnl_gains:.2f}$ ({pct_gains:.2f}%) | "
-            f"Pertes : {abs(pnl_losses):.2f}$ ({abs(pct_losses):.2f}%) | Meilleure paire : {best_pair}"
-        )
-    except Exception as exc:
-        print(f"❌ Erreur résumé backtest: {exc}")
+    if total_trades == 0:
+        print("\nℹ️ Aucun trade loggé.")
+        return
+
+    losses = total_trades - wins
+    winrate = (wins / total_trades * 100) if total_trades else 0.0
+    best_pair = max(pair_pnl.items(), key=lambda item: item[1])[0] if pair_pnl else "N/A"
+
+    print(
+        "\n"
+        f"📈 Résumé Backtest {BT_START} → {BT_END} (preset={PRESET_NAME}) "
+        f"Trades : {total_trades} | Gagnés : {wins} | Perdus : {losses} | Winrate : {winrate:.2f}% "
+        f"PnL net : {pnl_net_dollars:.2f}$ | Gains : {pnl_gains_dollars:.2f}$ ({pct_gains_total:.2f}%) | "
+        f"Pertes : {pnl_losses_dollars:.2f}$ ({pct_losses_total:.2f}%) | Meilleure paire : {best_pair}"
+    )
 
 
 # ---------------------------------------------------------------------------
