@@ -38,7 +38,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 BACKTEST = True
 BT_START = "2025-09-01"
-BT_END = "2025-11-01"
+BT_END = "2025-10-01"
 
 SYMBOLS = ["ETH/USDT", "SOL/USDT", "DOGE/USDT"]
 TIMEFRAME = "15m"
@@ -557,6 +557,7 @@ def run_backtest() -> None:
             print("\nℹ️ Aucun trade loggé.")
             return
         df_log["PnL ($)"] = df_log["PnL ($)"].str.replace("$", "", regex=False).astype(float)
+        df_log["PnL (%)"] = df_log["PnL (%)"].str.replace("%", "", regex=False).astype(float)
         df_log["timestamp"] = pd.to_datetime(df_log["timestamp"], errors="coerce", utc=True)
         window_start = pd.Timestamp(BT_START, tz=timezone.utc)
         window_end = pd.Timestamp(BT_END, tz=timezone.utc) + pd.Timedelta(days=1)
@@ -569,10 +570,12 @@ def run_backtest() -> None:
         pnl_net = df_log["PnL ($)"].sum()
         best_pair = df_log.groupby("Paire")["PnL ($)"].sum().sort_values(ascending=False).index[0]
         wr = (wins_n / total_n * 100) if total_n else 0
+        capital_used = CAPITAL_PER_TRADE * total_n if total_n else 0.0
+        pnl_pct_total = (pnl_net / capital_used * 100) if capital_used else 0.0
         print(
             f"\n📈 Résumé Backtest {BT_START} → {BT_END} (tf={TIMEFRAME})\n"
             f"Trades : {total_n} | Gagnés : {wins_n} | Perdus : {total_n - wins_n} | Winrate : {wr:.2f}%\n"
-            f"PnL net : {pnl_net:.2f}$ | Meilleure paire : {best_pair}"
+            f"PnL net : {pnl_net:.2f}$ | Variation : {pnl_pct_total:.2f}% | Meilleure paire : {best_pair}"
         )
     except Exception as exc:
         print(f"❌ Erreur résumé backtest: {exc}")
