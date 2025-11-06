@@ -39,8 +39,6 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 BACKTEST = True
 BT_START = "2025-10-01"
 BT_END = "2025-11-01"
-BT_START = "2025-09-01"
-BT_END = "2025-10-01"
 
 SYMBOLS = ["ETH/USDT", "SOL/USDT", "DOGE/USDT"]
 TIMEFRAME = "15m"
@@ -52,7 +50,7 @@ LAST_MSG_FILE = "last_msg.txt"
 
 FEES_ROUNDTRIP = 0.003
 
-PRESET_NAME = "actif"
+PRESET_NAME = os.getenv("BOT_PRESET", "optimise")
 
 TAKE_PROFIT_R = 2.2
 STOP_ATR_MULT = 1.3
@@ -78,9 +76,65 @@ SERIE_STOP_LOSS = 3
 MARKET_FILTER_SYMBOL = "BTC/USDT"
 MARKET_FILTER_TF = "1h"
 MARKET_RSI_LIMIT = 45
+MARKET_RSI_BEAR_MAX = 55
+USE_MARKET_FILTER = True
 
 INDICATOR_WARMUP = 50
 HTF_REFRESH_MIN = 60
+MARKET_FILTER_REFRESH_MIN = 60
+
+PARAM_PRESETS = {
+    "actif": {
+        "TAKE_PROFIT_R": 2.2,
+        "STOP_ATR_MULT": 1.3,
+        "MIN_SL_PCT": 0.007,
+        "MAX_SL_PCT": 0.025,
+        "BE_ARM_R": 0.7,
+        "TRAIL_ATR_MULT": 1.1,
+        "ADX_MIN": 22,
+        "RSI_LONG_MIN": 52,
+        "RSI_SHORT_MAX": 48,
+        "VOL_MULT": 1.25,
+        "BODY_ATR_MIN": 0.35,
+        "BREAKOUT_LOOKBACK": 20,
+        "COOLDOWN_MIN": 90,
+        "MAX_TRADES_PER_DAY": 3,
+        "DAILY_STOP_R": -3.0,
+        "SERIE_STOP_LOSS": 3,
+    },
+    "optimise": {
+        "TAKE_PROFIT_R": 1.45,
+        "STOP_ATR_MULT": 0.85,
+        "MIN_SL_PCT": 0.0045,
+        "MAX_SL_PCT": 0.018,
+        "BE_ARM_R": 0.55,
+        "TRAIL_ATR_MULT": 1.0,
+        "ADX_MIN": 18,
+        "RSI_LONG_MIN": 55,
+        "RSI_SHORT_MAX": 45,
+        "VOL_MULT": 1.1,
+        "BODY_ATR_MIN": 0.25,
+        "BREAKOUT_LOOKBACK": 14,
+        "COOLDOWN_MIN": 120,
+        "MAX_TRADES_PER_DAY": 2,
+        "DAILY_STOP_R": -2.0,
+        "SERIE_STOP_LOSS": 2,
+    },
+}
+
+
+def _apply_preset(name: str) -> str:
+    key = name.lower()
+    params = PARAM_PRESETS.get(key)
+    if params is None:
+        key = "actif"
+        params = PARAM_PRESETS[key]
+    for preset_key, value in params.items():
+        globals()[preset_key] = value
+    return key
+
+
+PRESET_NAME = _apply_preset(PRESET_NAME)
 
 # ---------------------------------------------------------------------------
 # EXCHANGE INITIALISATION
@@ -193,6 +247,47 @@ def fetch_ohlcv_range(symbol: str, tf: str, start_iso: str, end_iso: str, limit:
     out = out[(out["timestamp"] >= start) & (out["timestamp"] < end)].copy()
     out.reset_index(drop=True, inplace=True)
     return out
+
+
+def build_market_filter(start_iso: str, end_iso: str) -> Optional[pd.DataFrame]:
+    if not USE_MARKET_FILTER:
+        return None
+    try:
+        market_df = fetch_ohlcv_range(
+            MARKET_FILTER_SYMBOL,
+            MARKET_FILTER_TF,
+            start_iso,
+            end_iso,
+            limit=1000,
+        )
+        if market_df.empty:
+            return None
+        market_df = apply_indicators(market_df)
+        market_df["bull_ok"] = (
+            (market_df["ema_fast"] > market_df["ema_slow"])
+            & (market_df["rsi"] >= MARKET_RSI_LIMIT)
+        )
+        market_df["bear_ok"] = (
+            (market_df["ema_fast"] < market_df["ema_slow"])
+            & (market_df["rsi"] <= MARKET_RSI_BEAR_MAX)
+        )
+        return market_df[["timestamp", "bull_ok", "bear_ok", "rsi", "ema_fast", "ema_slow"]].copy()
+    except Exception:
+        return None
+
+
+def market_bias_allows(market_df: Optional[pd.DataFrame], ts: pd.Timestamp, bullish: bool) -> bool:
+    if not USE_MARKET_FILTER or market_df is None or market_df.empty:
+        return True
+    try:
+        position = market_df["timestamp"].searchsorted(ts)
+        idx = int(position) - 1
+        if idx < 0:
+            return False
+        column = "bull_ok" if bullish else "bear_ok"
+        return bool(market_df[column].iloc[idx])
+    except Exception:
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -448,21 +543,18 @@ def run_backtest() -> None:
     with open(LOG_FILE, "w", encoding="utf-8") as handle:
         handle.write("timestamp,Paire,Direction,Entrée,Sortie,PnL (%),PnL ($),Résultat\n")
 
-    try:
-        market_df = fetch_ohlcv(MARKET_FILTER_SYMBOL, MARKET_FILTER_TF, limit=300)
-        market_df = apply_indicators(market_df)
-        market_candle = market_df.iloc[-1]
-        ok_mkt = bool(
-            market_candle["rsi"] >= MARKET_RSI_LIMIT
-            and market_candle["ema_fast"] > market_candle["ema_slow"]
-        )
+    market_filter_df = build_market_filter(start_iso, end_iso)
+    if market_filter_df is not None and not market_filter_df.empty:
+        last_row = market_filter_df.iloc[-1]
+        bull_label = "Oui" if last_row["bull_ok"] else "Non"
+        bear_label = "Oui" if last_row["bear_ok"] else "Non"
         print(
             "[Filtre marché] "
-            f"RSI={market_candle['rsi']:.1f} | EMA9 {int(market_candle['ema_fast'])} > "
-            f"EMA21 {int(market_candle['ema_slow'])}? {'Oui' if ok_mkt else 'Non'}"
+            f"RSI={last_row['rsi']:.1f} | EMA9 {int(last_row['ema_fast'])} > "
+            f"EMA21 {int(last_row['ema_slow'])}? {bull_label} | Bear? {bear_label}"
         )
-    except Exception as exc:
-        print(f"[Filtre marché] Erreur: {exc}")
+    else:
+        print("[Filtre marché] Indisponible (pas de données)")
 
     total_trades = 0
     wins = 0
@@ -542,13 +634,15 @@ def run_backtest() -> None:
                 position = None
                 continue
 
-            ok_long, _ = should_long(df.iloc[: i + 1], 1.0)
-            ok_short, _ = should_short(df.iloc[: i + 1], 1.0)
+            ok_long, _ = should_long(df.iloc[: i + 1], VOL_MULT)
+            ok_short, _ = should_short(df.iloc[: i + 1], VOL_MULT)
+            bull_market = market_bias_allows(market_filter_df, candle_ts, bullish=True)
+            bear_market = market_bias_allows(market_filter_df, candle_ts, bullish=False)
 
             side: Optional[str]
-            if ok_long and not ok_short and bias_cache.get("bull"):
+            if ok_long and not ok_short and bias_cache.get("bull") and bull_market:
                 side = "LONG"
-            elif ok_short and not ok_long and bias_cache.get("bear"):
+            elif ok_short and not ok_long and bias_cache.get("bear") and bear_market:
                 side = "SHORT"
             else:
                 side = None
@@ -617,6 +711,8 @@ def run_live_paper() -> None:
     trades_today: Dict[Tuple[str, datetime.date], int] = {}
     bias_cache: Dict[str, Dict[str, Optional[float]]] = {symbol: {"bull": False, "bear": False, "rsi": None} for symbol in SYMBOLS}
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
+    market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
+    last_market_refresh: Optional[pd.Timestamp] = None
 
     while True:
         now_utc = datetime.now(timezone.utc)
@@ -624,6 +720,12 @@ def run_live_paper() -> None:
             print("⏸ Pause active…")
             time.sleep(15)
             continue
+        if USE_MARKET_FILTER and (
+            last_market_refresh is None
+            or (now_utc - last_market_refresh) >= pd.Timedelta(minutes=MARKET_FILTER_REFRESH_MIN)
+        ):
+            market_bias_live = fetch_htf_bias(MARKET_FILTER_SYMBOL)
+            last_market_refresh = now_utc
         for symbol in SYMBOLS:
             try:
                 df = fetch_ohlcv(symbol, TIMEFRAME, limit=300)
@@ -687,12 +789,12 @@ def run_live_paper() -> None:
                     del open_pos[symbol]
                     continue
 
-                ok_long, _ = should_long(df, 1.0)
-                ok_short, _ = should_short(df, 1.0)
+                ok_long, _ = should_long(df, VOL_MULT)
+                ok_short, _ = should_short(df, VOL_MULT)
 
-                if ok_long and not ok_short and bias_cache[symbol].get("bull"):
+                if ok_long and not ok_short and bias_cache[symbol].get("bull") and market_bias_live.get("bull"):
                     side = "LONG"
-                elif ok_short and not ok_long and bias_cache[symbol].get("bear"):
+                elif ok_short and not ok_long and bias_cache[symbol].get("bear") and market_bias_live.get("bear"):
                     side = "SHORT"
                 else:
                     continue
