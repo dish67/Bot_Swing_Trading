@@ -18,7 +18,7 @@ import math
 import os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import Dict, Optional, Tuple
 
 import ccxt
@@ -36,7 +36,10 @@ API_SECRET = os.getenv("MEXC_API_SECRET", "")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-BACKTEST = True
+MODE = os.getenv("BOT_MODE", "backtest").strip().lower()
+BACKTEST = MODE == "backtest"
+PAPER_TRADING = MODE == "paper"
+LIVE_TRADING = MODE == "live"
 BT_START = "2025-10-01"
 BT_END = "2025-11-01"
 
@@ -136,6 +139,8 @@ def _apply_preset(name: str) -> str:
 
 PRESET_NAME = _apply_preset(PRESET_NAME)
 
+ALLOW_LIVE_SHORTS = os.getenv("BOT_ALLOW_SHORTS", "false").strip().lower() == "true"
+
 # ---------------------------------------------------------------------------
 # EXCHANGE INITIALISATION
 # ---------------------------------------------------------------------------
@@ -147,6 +152,7 @@ exchange = ccxt.mexc(
         "options": {"defaultType": "spot"},
     }
 )
+exchange.load_markets()
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +479,31 @@ def log_trade(
     )
 
 
+def _notional_to_amount(symbol: str, price: float) -> Optional[float]:
+    if price <= 0:
+        return None
+    amount = CAPITAL_PER_TRADE / price
+    try:
+        return float(exchange.amount_to_precision(symbol, amount))
+    except Exception:
+        return float(round(amount, 8))
+
+
+def _extract_fill_price(order: dict, fallback: float) -> float:
+    for key in ("average", "avgPrice", "price", "info"):
+        value = order.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return float(value)
+        if isinstance(value, dict):
+            nested_price = value.get("price")
+            if nested_price:
+                try:
+                    return float(nested_price)
+                except (TypeError, ValueError):
+                    continue
+    return float(fallback)
+
+
 # ---------------------------------------------------------------------------
 # BACKTEST
 # ---------------------------------------------------------------------------
@@ -488,6 +519,7 @@ class Position:
     sl_price: float
     tp_price: float
     sl_pct: float
+    amount: Optional[float] = None
 
     def unrealised_r_multiple(self, price: float) -> float:
         gross_pct = (
@@ -577,9 +609,9 @@ def run_backtest() -> None:
         bias_cache = {"bull": False, "bear": False, "rsi": None}
 
         last_trade_ts = pd.Timestamp(0, tz=timezone.utc)
-        daily_r: Dict[Tuple[str, datetime.date], float] = {}
+        daily_r: Dict[Tuple[str, date], float] = {}
         streak_losses = 0
-        trades_today: Dict[Tuple[str, datetime.date], int] = {}
+        trades_today: Dict[Tuple[str, date], int] = {}
 
         position: Optional[Position] = None
 
@@ -676,7 +708,13 @@ def run_backtest() -> None:
                 sl_price = entry_price * (1 + sl_pct)
                 tp_price = entry_price * (1 - tp_pct)
 
-            position = Position(side=side, entry=entry_price, sl_price=sl_price, tp_price=tp_price, sl_pct=sl_pct)
+            position = Position(
+                side=side,
+                entry=entry_price,
+                sl_price=sl_price,
+                tp_price=tp_price,
+                sl_pct=sl_pct,
+            )
             entry_emoji = "🟢" if side == "LONG" else "🔴"
             print(
                 f"   {entry_emoji} {symbol} {side} ouvert @ {entry_price:.5f} | "
@@ -708,9 +746,9 @@ def run_live_paper() -> None:
     tg_send("🟢 Bot lancé (paper) 15m + biais 1h")
     open_pos: Dict[str, Position] = {}
     last_trade_ts = {symbol: pd.Timestamp(0, tz=timezone.utc) for symbol in SYMBOLS}
-    daily_r: Dict[Tuple[str, datetime.date], float] = {}
+    daily_r: Dict[Tuple[str, date], float] = {}
     streak_losses = {symbol: 0 for symbol in SYMBOLS}
-    trades_today: Dict[Tuple[str, datetime.date], int] = {}
+    trades_today: Dict[Tuple[str, date], int] = {}
     bias_cache: Dict[str, Dict[str, Optional[float]]] = {symbol: {"bull": False, "bear": False, "rsi": None} for symbol in SYMBOLS}
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
     market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
@@ -816,7 +854,13 @@ def run_live_paper() -> None:
                     sl_price = entry_price * (1 + sl_pct)
                     tp_price = entry_price * (1 - tp_pct)
 
-                open_pos[symbol] = Position(side=side, entry=entry_price, sl_price=sl_price, tp_price=tp_price, sl_pct=sl_pct)
+                open_pos[symbol] = Position(
+                    side=side,
+                    entry=entry_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    sl_pct=sl_pct,
+                )
                 last_trade_ts[symbol] = candle_ts
                 entry_emoji = "🟢" if side == "LONG" else "🔴"
                 print(
@@ -829,11 +873,177 @@ def run_live_paper() -> None:
         time.sleep(20)
 
 
+def run_live_trading() -> None:
+    tg_send("🟢 Bot lancé (live) 15m + biais 1h")
+    open_pos: Dict[str, Position] = {}
+    last_trade_ts = {symbol: pd.Timestamp(0, tz=timezone.utc) for symbol in SYMBOLS}
+    daily_r: Dict[Tuple[str, date], float] = {}
+    streak_losses = {symbol: 0 for symbol in SYMBOLS}
+    trades_today: Dict[Tuple[str, date], int] = {}
+    bias_cache: Dict[str, Dict[str, Optional[float]]] = {symbol: {"bull": False, "bear": False, "rsi": None} for symbol in SYMBOLS}
+    bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
+    market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
+    last_market_refresh: Optional[pd.Timestamp] = None
+
+    while True:
+        now_utc = datetime.now(timezone.utc)
+        if tg_check_pause():
+            print("⏸ Pause active…")
+            time.sleep(15)
+            continue
+        if USE_MARKET_FILTER and (
+            last_market_refresh is None
+            or (now_utc - last_market_refresh) >= pd.Timedelta(minutes=MARKET_FILTER_REFRESH_MIN)
+        ):
+            market_bias_live = fetch_htf_bias(MARKET_FILTER_SYMBOL)
+            last_market_refresh = now_utc
+        for symbol in SYMBOLS:
+            try:
+                df = fetch_ohlcv(symbol, TIMEFRAME, limit=300)
+                if df.empty or len(df) < INDICATOR_WARMUP:
+                    continue
+                df = apply_indicators(df)
+                candle = df.iloc[-1]
+                candle_ts = df["timestamp"].iloc[-1]
+
+                if (candle_ts - last_trade_ts[symbol]) < pd.Timedelta(minutes=COOLDOWN_MIN):
+                    continue
+
+                bias_refresh[symbol], bias_cache[symbol] = _refresh_bias_if_needed(
+                    symbol, bias_refresh[symbol], candle_ts, bias_cache[symbol]
+                )
+
+                if not is_allowed_hour(candle_ts):
+                    if symbol in open_pos:
+                        atr_value = df["atr"].iloc[-1]
+                        atr = float(atr_value) if pd.notna(atr_value) else None
+                        _update_trailing_stop(open_pos[symbol], candle["close"], atr)
+                    continue
+
+                day_key = (symbol, candle_ts.date())
+                if daily_r.get(day_key, 0.0) <= DAILY_STOP_R:
+                    continue
+                if streak_losses[symbol] >= SERIE_STOP_LOSS:
+                    continue
+                if trades_today.get(day_key, 0) >= MAX_TRADES_PER_DAY:
+                    continue
+
+                atr_value = df["atr"].iloc[-1]
+                atr = float(atr_value) if pd.notna(atr_value) else None
+
+                if symbol in open_pos:
+                    position = open_pos[symbol]
+                    _update_trailing_stop(position, candle["close"], atr)
+                    exit_price, reason = _check_exit(position, candle)
+                    if exit_price is None:
+                        continue
+
+                    try:
+                        exit_amount = position.amount or _notional_to_amount(symbol, position.entry)
+                        if exit_amount is None or exit_amount <= 0:
+                            raise ValueError("invalid exit amount")
+                        exit_side = "sell" if position.side == "LONG" else "buy"
+                        exit_order = exchange.create_order(symbol, "market", exit_side, exit_amount)
+                        exit_fill = _extract_fill_price(exit_order, exit_price)
+                    except Exception as exc:
+                        print(f"[{symbol}] fermeture live impossible: {exc}")
+                        continue
+
+                    gross_pct = (
+                        (exit_fill - position.entry) / position.entry
+                        if position.side == "LONG"
+                        else (position.entry - exit_fill) / position.entry
+                    )
+                    pnl_pct = gross_pct - FEES_ROUNDTRIP
+                    log_trade(symbol, position.side, position.entry, exit_fill, pnl_pct, reason)
+
+                    sl_pct_abs = max(abs(position.sl_pct), 1e-6)
+                    r_multiple = pnl_pct / sl_pct_abs
+                    if pnl_pct <= 0:
+                        streak_losses[symbol] += 1
+                    else:
+                        streak_losses[symbol] = 0
+                    daily_r[day_key] = daily_r.get(day_key, 0.0) + r_multiple
+                    trades_today[day_key] = trades_today.get(day_key, 0) + 1
+                    last_trade_ts[symbol] = candle_ts
+                    reason_suffix = f" ({reason})" if reason else ""
+                    tg_send(f"✅ {symbol} {position.side} fermé{reason_suffix} | pnl={pnl_pct * 100:.2f}%")
+                    del open_pos[symbol]
+                    continue
+
+                ok_long, _ = should_long(df, VOL_MULT)
+                ok_short, _ = should_short(df, VOL_MULT)
+
+                if ok_long and not ok_short and bias_cache[symbol].get("bull") and market_bias_live.get("bull"):
+                    side = "LONG"
+                elif ok_short and not ok_long and bias_cache[symbol].get("bear") and market_bias_live.get("bear"):
+                    side = "SHORT"
+                else:
+                    continue
+
+                if side == "SHORT" and not ALLOW_LIVE_SHORTS:
+                    print(f"[{symbol}] Signal SHORT ignoré (BOT_ALLOW_SHORTS désactivé en live).")
+                    continue
+
+                if atr is None or math.isnan(atr) or atr <= 0:
+                    continue
+
+                sl_pct = STOP_ATR_MULT * (atr / float(candle["close"]))
+                sl_pct = min(max(sl_pct, MIN_SL_PCT), MAX_SL_PCT)
+                tp_pct = TAKE_PROFIT_R * sl_pct
+
+                entry_price = float(candle["close"])
+                order_amount = _notional_to_amount(symbol, entry_price)
+                if order_amount is None or order_amount <= 0:
+                    continue
+
+                order_side = "buy" if side == "LONG" else "sell"
+
+                try:
+                    order = exchange.create_order(symbol, "market", order_side, order_amount)
+                    fill_price = _extract_fill_price(order, entry_price)
+                except Exception as exc:
+                    print(f"[{symbol}] ouverture live impossible: {exc}")
+                    continue
+
+                if side == "LONG":
+                    sl_price = fill_price * (1 - sl_pct)
+                    tp_price = fill_price * (1 + tp_pct)
+                else:
+                    sl_price = fill_price * (1 + sl_pct)
+                    tp_price = fill_price * (1 - tp_pct)
+
+                open_pos[symbol] = Position(
+                    side=side,
+                    entry=fill_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price,
+                    sl_pct=sl_pct,
+                    amount=order_amount,
+                )
+                last_trade_ts[symbol] = candle_ts
+                entry_emoji = "🟢" if side == "LONG" else "🔴"
+                print(
+                    f"   {entry_emoji} {symbol} {side} (live) ouvert @ {fill_price:.5f} | "
+                    f"SL={sl_price:.5f} | TP={tp_price:.5f} | taille={order_amount}"
+                )
+                tg_send(f"📥 {symbol} {side} (live) | entry={fill_price}")
+            except Exception as exc:
+                print(f"[{symbol}] erreur live: {exc}")
+        time.sleep(20)
+
+
 # ---------------------------------------------------------------------------
 # MAIN ENTRYPOINT
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     if BACKTEST:
         run_backtest()
-    else:
+    elif PAPER_TRADING:
         run_live_paper()
+    elif LIVE_TRADING:
+        run_live_trading()
+    else:
+        raise SystemExit(
+            "BOT_MODE inconnu. Utilisez 'backtest', 'paper' ou 'live'."
+        )
