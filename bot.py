@@ -345,7 +345,7 @@ def log_trade(symbol: str, side: str, entry: float, exit_price: float, pnl_pct: 
     ensure_log_header()
     result = "Gagné" if pnl_pct > 0 else "Perdu"
     row = [
-        datetime.utcnow().isoformat(),
+        datetime.now(timezone.utc).isoformat(),
         symbol,
         side,
         f"{entry:.5f}",
@@ -589,7 +589,7 @@ def run_live_paper() -> None:
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
 
     while True:
-        now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
+        now_utc = datetime.now(timezone.utc)
         if tg_check_pause():
             print("⏸ Pause active…")
             time.sleep(15)
