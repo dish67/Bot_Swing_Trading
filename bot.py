@@ -152,6 +152,15 @@ if PAPER_RUNTIME_HOURS < 0:
 
 ALLOW_LIVE_SHORTS = os.getenv("BOT_ALLOW_SHORTS", "false").strip().lower() == "true"
 
+
+def _now_str() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _log_candle_scan(symbol: str, candle_ts: pd.Timestamp) -> None:
+    ts_str = candle_ts.strftime("%Y-%m-%d %H:%M") if pd.notna(candle_ts) else "unknown"
+    print(f"[{_now_str()}] Analyse de la bougie {TIMEFRAME} (UTC {ts_str}) sur {symbol}")
+
 # ---------------------------------------------------------------------------
 # EXCHANGE INITIALISATION
 # ---------------------------------------------------------------------------
@@ -764,6 +773,7 @@ def run_live_paper() -> None:
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
     market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
     last_market_refresh: Optional[pd.Timestamp] = None
+    last_logged_candle: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
     runtime_deadline: Optional[pd.Timestamp] = None
     if PAPER_RUNTIME_HOURS > 0:
         runtime_deadline = pd.Timestamp(datetime.now(timezone.utc)) + pd.Timedelta(hours=PAPER_RUNTIME_HOURS)
@@ -797,6 +807,13 @@ def run_live_paper() -> None:
                 df = apply_indicators(df)
                 candle = df.iloc[-1]
                 candle_ts = df["timestamp"].iloc[-1]
+
+                if (
+                    last_logged_candle[symbol] is None
+                    or candle_ts > last_logged_candle[symbol]
+                ):
+                    _log_candle_scan(symbol, candle_ts)
+                    last_logged_candle[symbol] = candle_ts
 
                 if (candle_ts - last_trade_ts[symbol]) < pd.Timedelta(minutes=COOLDOWN_MIN):
                     continue
@@ -910,6 +927,7 @@ def run_live_trading() -> None:
     bias_refresh: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
     market_bias_live: Dict[str, Optional[float]] = {"bull": True, "bear": True, "rsi": None}
     last_market_refresh: Optional[pd.Timestamp] = None
+    last_logged_candle: Dict[str, Optional[pd.Timestamp]] = {symbol: None for symbol in SYMBOLS}
 
     while True:
         now_utc = datetime.now(timezone.utc)
@@ -931,6 +949,13 @@ def run_live_trading() -> None:
                 df = apply_indicators(df)
                 candle = df.iloc[-1]
                 candle_ts = df["timestamp"].iloc[-1]
+
+                if (
+                    last_logged_candle[symbol] is None
+                    or candle_ts > last_logged_candle[symbol]
+                ):
+                    _log_candle_scan(symbol, candle_ts)
+                    last_logged_candle[symbol] = candle_ts
 
                 if (candle_ts - last_trade_ts[symbol]) < pd.Timedelta(minutes=COOLDOWN_MIN):
                     continue
