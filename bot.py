@@ -19,6 +19,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone, date
+from zoneinfo import ZoneInfo
 from typing import Dict, Optional, Tuple
 
 import ccxt
@@ -152,14 +153,23 @@ if PAPER_RUNTIME_HOURS < 0:
 
 ALLOW_LIVE_SHORTS = os.getenv("BOT_ALLOW_SHORTS", "false").strip().lower() == "true"
 
+LOCAL_TZ = ZoneInfo("America/Toronto")
+
 
 def _now_str() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _log_candle_scan(symbol: str, candle_ts: pd.Timestamp) -> None:
-    ts_str = candle_ts.strftime("%Y-%m-%d %H:%M") if pd.notna(candle_ts) else "unknown"
-    print(f"[{_now_str()}] Analyse de la bougie {TIMEFRAME} (UTC {ts_str}) sur {symbol}")
+    if pd.notna(candle_ts):
+        if candle_ts.tzinfo is None:
+            ts_local = candle_ts.tz_localize(timezone.utc).astimezone(LOCAL_TZ)
+        else:
+            ts_local = candle_ts.tz_convert(LOCAL_TZ)
+        ts_str = ts_local.strftime("%Y-%m-%d %H:%M")
+    else:
+        ts_str = "unknown"
+    print(f"[{_now_str()}] Analyse de la bougie {TIMEFRAME} ({ts_str} heure locale) sur {symbol}")
 
 # ---------------------------------------------------------------------------
 # EXCHANGE INITIALISATION
