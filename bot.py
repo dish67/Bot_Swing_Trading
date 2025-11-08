@@ -54,7 +54,13 @@ LAST_MSG_FILE = "last_msg.txt"
 
 FEES_ROUNDTRIP = 0.003
 
-PRESET_NAME = os.getenv("BOT_PRESET", "optimise")
+_RAW_PRESET = os.getenv("BOT_PRESET")
+if _RAW_PRESET:
+    PRESET_NAME = _RAW_PRESET
+    _PRESET_SOURCE = f"BOT_PRESET={_RAW_PRESET}"
+else:
+    PRESET_NAME = "agressif"
+    _PRESET_SOURCE = "default (agressif)"
 
 TAKE_PROFIT_R = 2.2
 STOP_ATR_MULT = 1.3
@@ -124,7 +130,29 @@ PARAM_PRESETS = {
         "DAILY_STOP_R": -2.0,
         "SERIE_STOP_LOSS": 2,
     },
+    "agressif": {
+        "TAKE_PROFIT_R": 1.2,
+        "STOP_ATR_MULT": 0.7,
+        "MIN_SL_PCT": 0.0035,
+        "MAX_SL_PCT": 0.016,
+        "BE_ARM_R": 0.5,
+        "TRAIL_ATR_MULT": 0.9,
+        "ADX_MIN": 14,
+        "RSI_LONG_MIN": 50,
+        "RSI_SHORT_MAX": 50,
+        "VOL_MULT": 1.0,
+        "BODY_ATR_MIN": 0.2,
+        "BREAKOUT_LOOKBACK": 10,
+        "COOLDOWN_MIN": 60,
+        "MAX_TRADES_PER_DAY": 4,
+        "DAILY_STOP_R": -3.5,
+        "SERIE_STOP_LOSS": 4,
+    },
 }
+
+
+# Provide an alias so BOT_PRESET=plus_agressif matches the requested wording.
+PARAM_PRESETS["plus_agressif"] = PARAM_PRESETS["agressif"]
 
 
 def _apply_preset(name: str) -> str:
@@ -139,6 +167,15 @@ def _apply_preset(name: str) -> str:
 
 
 PRESET_NAME = _apply_preset(PRESET_NAME)
+
+print(
+    "⚙️  Configuration: mode="
+    f"{MODE} | preset={PRESET_NAME} ({_PRESET_SOURCE})."
+)
+print(
+    "   ➤ Modifiez le preset en définissant BOT_PRESET=actif|optimise|agressif"
+    " (ex: BOT_PRESET=agressif ./start.sh)."
+)
 
 _raw_paper_runtime = os.getenv("BOT_PAPER_RUNTIME_HOURS")
 if _raw_paper_runtime is None:
